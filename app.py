@@ -1,347 +1,259 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
-from datetime import datetime, timedelta
-import re
-import os
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from datetime import datetime
 
-# --- DATABASE SETUP ---
-conn = sqlite3.connect('pharma_ai.db', check_same_thread=False)
-c = conn.cursor()
+# Page Configuration
+st.set_page_config(
+    page_title="PharmaAI Pro - Advanced Pharmacy System",
+    page_icon="💊",
+    layout="wide",
+)
 
-# 1. Inventory Table
-c.execute('''CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                salt TEXT,
-                batch TEXT,
-                expiry TEXT,
-                mrp REAL,
-                gst REAL,
-                stock INTEGER
-            )''')
+# Custom CSS for Professional ERP Look
+st.markdown(
+    """
+    <style>
+    .main { background-color: #0e1117; color: #ffffff; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { background-color: #1f2937; color: white; border-radius: 5px; padding: 10px 20px; }
+    .stTabs [aria-selected="true"] { background-color: #3b82f6 !important; color: white !important; }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
 
-# 2. Schedule H/H1 Audit Register Table
-c.execute('''CREATE TABLE IF NOT EXISTS schedule_h_register (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                patient_name TEXT,
-                doctor_name TEXT,
-                medicine_name TEXT,
-                batch TEXT,
-                qty INTEGER
-            )''')
+# Initialize Session State for Permanent-like Session Memory & Cart
+if "inventory" not in st.session_state:
+    st.session_state.inventory = pd.DataFrame([
+        {
+            "id": 1,
+            "name": "Dolo 650",
+            "salt": "Paracetamol 650mg",
+            "batch": "DL650-24",
+            "expiry": "2027-08",
+            "stock": 150,
+            "mrp": 30.0,
+            "gst": 12,
+        },
+        {
+            "id": 2,
+            "name": "Pan-D",
+            "salt": "Pantoprazole + Domperidone",
+            "batch": "PND-99",
+            "expiry": "2026-12",
+            "stock": 80,
+            "mrp": 115.0,
+            "gst": 12,
+        },
+        {
+            "id": 3,
+            "name": "Alprazolam 0.5mg",
+            "salt": "Alprazolam (Schedule H1)",
+            "batch": "ALP-05",
+            "expiry": "2028-01",
+            "stock": 40,
+            "mrp": 45.0,
+            "gst": 18,
+        },
+        {
+            "id": 4,
+            "name": "Augmentin 625",
+            "salt": "Amoxicillin + Clavulanic Acid",
+            "batch": "AUG-62",
+            "expiry": "2026-06",
+            "stock": 60,
+            "mrp": 204.0,
+            "gst": 12,
+        },
+    ])
 
-# 3. Customer Database Table
-c.execute('''CREATE TABLE IF NOT EXISTS customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                phone TEXT,
-                last_medicine TEXT,
-                next_refill_date TEXT
-            )''')
-
-# Sample Data Injection agar khali hai
-c.execute("SELECT COUNT(*) FROM inventory")
-if c.fetchone()[0] == 0:
-    sample_meds = [
-        ("Dolo 650", "Paracetamol 650mg", "B101", "2027-05", 30.0, 12.0, 100),
-        ("Pan-D", "Pantoprazole + Domperidone", "P204", "2026-12", 190.0, 12.0, 50),
-        ("Alprazolam 0.5mg", "Alprazolam (Schedule H1)", "ALP01", "2027-03", 45.0, 18.0, 30),
-        ("Augmentin 625", "Amoxicillin + Clavulanic Acid", "AG11", "2027-01", 200.0, 12.0, 30)
-    ]
-    c.executemany("INSERT INTO inventory (name, salt, batch, expiry, mrp, gst, stock) VALUES (?,?,?,?,?,?,?)", sample_meds)
-    conn.commit()
-
-# --- APP UI CONFIGURATION ---
-st.set_page_config(page_title="PharmaAI Pro - Enterprise Edition", layout="wide")
-st.title("💊 PharmaAI Pro — Next-Gen AI Pharmacy & Billing System")
-
-if 'cart' not in st.session_state:
+if "cart" not in st.session_state:
     st.session_state.cart = []
 
-if 'last_invoice' not in st.session_state:
-    st.session_state.last_invoice = None
+if "sales_history" not in st.session_state:
+    st.session_state.sales_history = []
 
-# --- PDF GENERATOR FUNCTION ---
-def generate_pdf_invoice(invoice_data, customer_name, doctor_name):
-    pdf_filename = "invoice.pdf"
-    c_pdf = canvas.Canvas(pdf_filename, pagesize=letter)
-    width, height = letter
-    
-    c_pdf.setFont("Helvetica-Bold", 16)
-    c_pdf.drawString(50, height - 50, "PHARMA AI MEDICAL STORE")
-    c_pdf.setFont("Helvetica", 10)
-    c_pdf.drawString(50, height - 65, "GSTIN: 08AAAAA0000A1Z5 | Ph: +91 9876543210")
-    c_pdf.drawString(50, height - 80, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    
-    c_pdf.drawString(50, height - 110, f"Patient Name: {customer_name}")
-    c_pdf.drawString(50, height - 125, f"Prescribing Doctor: {doctor_name}")
-    
-    c_pdf.line(50, height - 140, 560, height - 140)
-    c_pdf.setFont("Helvetica-Bold", 10)
-    c_pdf.drawString(50, height - 155, "Medicine")
-    c_pdf.drawString(200, height - 155, "Batch")
-    c_pdf.drawString(270, height - 155, "Expiry")
-    c_pdf.drawString(340, height - 155, "Qty")
-    c_pdf.drawString(400, height - 155, "MRP (₹)")
-    c_pdf.drawString(480, height - 155, "Total (₹)")
-    c_pdf.line(50, height - 165, 560, height - 165)
-    
-    y = height - 180
-    subtotal = 0
-    c_pdf.setFont("Helvetica", 10)
-    for item in invoice_data:
-        c_pdf.drawString(50, y, str(item['Medicine']))
-        c_pdf.drawString(200, y, str(item['Batch']))
-        c_pdf.drawString(270, y, str(item['Expiry']))
-        c_pdf.drawString(340, y, str(item['Qty']))
-        c_pdf.drawString(400, y, f"{item['MRP']:.2f}")
-        c_pdf.drawString(480, y, f"{item['Total']:.2f}")
-        subtotal += item['Total']
-        y -= 20
-        
-    c_pdf.line(50, y - 5, 560, y - 5)
-    y -= 25
-    c_pdf.setFont("Helvetica-Bold", 11)
-    c_pdf.drawString(380, y, f"Grand Total: ₹ {subtotal:.2f}")
-    
-    c_pdf.setFont("Helvetica-Oblique", 9)
-    c_pdf.drawString(50, 50, "Thank you for shopping! Get well soon.")
-    c_pdf.save()
-    return pdf_filename
+# App Header
+st.title("💊 PharmaAI Pro — Enterprise Pharmacy & ERP System")
+st.markdown(
+    "*Professional grade inventory management, smart AI billing, schedule H1"
+    " tracking, and tax invoicing.*"
+)
 
-# --- NAVIGATION TABS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "⚡ Smart Billing & Print", 
-    "📦 Inventory & Expiry", 
-    "⚖️ Schedule H/H1 Compliance", 
-    "📱 GST & WhatsApp CRM",
-    "🔄 Marg / Excel Data Import"
+# Navigation Tabs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "⚡ Smart Billing & POS",
+    "📦 Inventory & Stock",
+    "🚨 Expiry & Schedule H1",
+    "📊 Reports & GST",
 ])
 
-# ================= TAB 1: SMART BILLING & PRINT =================
+# ----------------- TAB 1: SMART BILLING & POS -----------------
 with tab1:
-    col1, col2 = st.columns([1.2, 1])
-    
-    with col1:
-        st.subheader("🤖 AI Natural Language Quick-Billing")
-        ai_input = st.text_input("Type item command (e.g., '2 Dolo 650, 1 Pan-D'):", placeholder="Enter items here...")
-        
-        if st.button("⚡ Add to Cart via AI") and ai_input:
-            df_inv = pd.read_sql_query("SELECT * FROM inventory", conn)
-            added_any = False
-            for _, row in df_inv.iterrows():
-                med_name = row['name']
-                pattern = rf"(\d+)?\s*{re.escape(med_name)}"
-                match = re.search(pattern, ai_input, re.IGNORECASE)
-                if match:
-                    qty = int(match.group(1)) if match.group(1) else 1
-                    if row['stock'] >= qty:
-                        total_price = row['mrp'] * qty
-                        st.session_state.cart.append({
-                            "id": row['id'],
-                            "Medicine": med_name,
-                            "Batch": row['batch'],
-                            "Expiry": row['expiry'],
-                            "Qty": qty,
-                            "MRP": row['mrp'],
-                            "GST%": row['gst'],
-                            "Total": total_price
-                        })
-                        added_any = True
-                    else:
-                        st.error(f"{med_name} out of stock! Available: {row['stock']}")
-            if added_any:
-                st.success("Items added to cart successfully!")
-            else:
-                st.warning("No matching medicine found in inventory.")
+  st.subheader("🛒 Point of Sale (POS) & Invoice Counter")
 
-        st.divider()
-        st.subheader("📋 Available Stock Catalog")
-        st.dataframe(pd.read_sql_query("SELECT name, salt, batch, expiry, mrp, gst, stock FROM inventory", conn), use_container_width=True)
+  col1, col2 = st.columns([2, 1])
 
-    with col2:
-        st.subheader("🧾 Invoice Counter & Print")
-        cust_name = st.text_input("Patient Name", value="Rahul Sharma")
-        cust_phone = st.text_input("Patient WhatsApp Number", value="9876543210")
-        doc_name = st.text_input("Prescribing Doctor Name", value="Dr. V. K. Verma")
-        
-        if st.session_state.cart:
-            cart_df = pd.DataFrame(st.session_state.cart)
-            st.table(cart_df[["Medicine", "Batch", "Qty", "MRP", "Total"]])
-            
-            subtotal = cart_df["Total"].sum()
-            gst_amount = (subtotal * 12) / (100 + 12)
-            grand_total = subtotal
-            
-            st.markdown(f"**Subtotal:** ₹ {subtotal:.2f}")
-            st.markdown(f"**Estimated GST (Included):** ₹ {gst_amount:.2f}")
-            st.markdown(f"### 💰 Grand Total: ₹ {grand_total:.2f}")
-            
-            c1, c2 = st.columns(2)
-            if c1.button("✅ Confirm Bill & Generate PDF", type="primary"):
-                for item in st.session_state.cart:
-                    c.execute("UPDATE inventory SET stock = stock - ? WHERE id = ?", (item['Qty'], item['id']))
-                    if "Alprazolam" in item['Medicine'] or "Amoxicillin" in item['Medicine']:
-                        c.execute("INSERT INTO schedule_h_register (timestamp, patient_name, doctor_name, medicine_name, batch, qty) VALUES (?,?,?,?,?,?)",
-                                  (str(datetime.now()), cust_name, doc_name, item['Medicine'], item['Batch'], item['Qty']))
-                
-                refill_date = str(datetime.now().date() + timedelta(days=30))
-                c.execute("INSERT INTO customers (name, phone, last_medicine, next_refill_date) VALUES (?,?,?,?)",
-                          (cust_name, cust_phone, cart_df.iloc[0]['Medicine'], refill_date))
-                conn.commit()
-                
-                st.session_state.last_invoice = generate_pdf_invoice(st.session_state.cart, cust_name, doc_name)
-                st.session_state.cart = []
-                st.success("Invoice generated successfully!")
-                st.rerun()
-                
-            if c2.button("🗑️ Clear Cart"):
-                st.session_state.cart = []
-                st.rerun()
-                
-        if st.session_state.last_invoice and os.path.exists(st.session_state.last_invoice):
-            st.divider()
-            st.success("📄 Print-ready Tax Invoice PDF is ready!")
-            with open(st.session_state.last_invoice, "rb") as pdf_file:
-                st.download_button(
-                    label="📥 Download / Print Tax Invoice (PDF)",
-                    data=pdf_file,
-                    file_name="Medical_Tax_Invoice.pdf",
-                    mime="application/pdf"
-                )
-        else:
-            if not st.session_state.cart:
-                st.info("Cart is empty.")
-
-# ================= TAB 2: INVENTORY & EXPIRY =================
-with tab2:
-    st.subheader("📦 Inventory Stock & Automated FEFO Expiry Matrix")
-    df_inv = pd.read_sql_query("SELECT * FROM inventory", conn)
-    
-    current_date = datetime.now()
-    alerts = []
-    for _, row in df_inv.iterrows():
-        try:
-            exp_date = datetime.strptime(str(row['expiry'])[:7], "%Y-%m")
-            days_left = (exp_date - current_date).days
-        except:
-            days_left = 180
-        
-        status = "🟢 Safe (>90 Days)"
-        if days_left < 30:
-            status = "🔴 Critical (<30 Days - Return/Clear)"
-        elif days_left < 90:
-            status = "🟡 Near-Expiry (30-90 Days)"
-            
-        alerts.append({"Medicine": row['name'], "Batch": row['batch'], "Expiry": row['expiry'], "Stock": row['stock'], "Status": status})
-    
-    st.dataframe(pd.DataFrame(alerts), use_container_width=True)
-
-# ================= TAB 3: SCHEDULE H/H1 COMPLIANCE =================
-with tab3:
-    st.subheader("⚖️ Government Drug Inspector Audit Register (Schedule H / H1)")
-    df_h = pd.read_sql_query("SELECT * FROM schedule_h_register", conn)
-    if not df_h.empty:
-        st.dataframe(df_h, use_container_width=True)
-    else:
-        st.info("No Schedule H/H1 restricted drugs billed yet.")
-
-# ================= TAB 4: GST & WHATSAPP CRM =================
-with tab4:
-    st.subheader("📱 Automated WhatsApp Refill Reminders & GST Reports")
-    col_a, col_b = st.columns(2)
-    
-    with col_a:
-        st.markdown("#### 💬 Pending Patient Refills (WhatsApp Automation)")
-        df_cust = pd.read_sql_query("SELECT * FROM customers", conn)
-        if not df_cust.empty:
-            for _, row in df_cust.iterrows():
-                st.write(f"👤 **{row['name']}** ({row['phone']}) - Last Med: *{row['last_medicine']}* | Refill Due: `{row['next_refill_date']}`")
-                if st.button(f"Send WhatsApp Reminder to {row['name']}", key=str(row['id'])):
-                    st.success(f"WhatsApp API Triggered: 'Hello {row['name']}, your medicine {row['last_medicine']} is due for refill. Order now from PharmaAI Store!'")
-        else:
-            st.info("No customer records found.")
-            
-    with col_b:
-        st.markdown("#### 📊 GST Return Summary (GSTR-1 Format)")
-        st.write("Total Taxable turnover computed dynamically for filing returns.")
-        st.info("Tax Filing status: Ready for 1-Click JSON Export for GST Portal.")
-
-# ================= TAB 5: MARG / EXCEL UNIVERSAL DATA MIGRATION =================
-with tab5:
-    st.subheader("🔄 1-Click Data Migration (Marg ERP / Busy / Excel / CSV)")
-    st.markdown("""
-    Purane software (jaise **Marg ERP, MediBilling, ya Busy**) se apni stock list **CSV ya Excel** format mein export karein aur yahan upload karein. 
-    Humara AI Smart Mapper khud columns ko pehchan kar saara data import kar lega.
-    """)
-    
-    # Download Sample Template taaki user format dekh sake
-    sample_template = pd.DataFrame({
-        "Medicine Name": ["Calpol 500", "Omez 20"],
-        "Salt": ["Paracetamol 500mg", "Omeprazole 20mg"],
-        "Batch": ["CP102", "OM55"],
-        "Expiry": ["2027-09", "2027-04"],
-        "MRP": [15.0, 58.0],
-        "GST": [12.0, 12.0],
-        "Stock": [120, 80]
-    })
-    
-    st.download_button(
-        label="📄 Download Sample Import Format (CSV)",
-        data=sample_template.to_csv(index=False),
-        file_name="Marg_To_PharmaAI_Template.csv",
-        mime="text/csv"
+  with col1:
+    search_query = st.selectbox(
+        "Search or Select Medicine from Catalog",
+        st.session_state.inventory["name"].tolist(),
     )
+    selected_med = st.session_state.inventory[
+        st.session_state.inventory["name"] == search_query
+    ].iloc[0]
+
+    st.info(
+        f"**Available Stock:** {selected_med['stock']} units | **MRP:**"
+        f" ₹{selected_med['mrp']} | **Batch:** {selected_med['batch']}"
+    )
+
+    qty = st.number_input("Quantity", min_value=1, max_value=int(selected_med['stock']), value=1)
     
-    st.divider()
-    uploaded_file = st.file_uploader("Upload Marg / Excel / CSV Stock File", type=["csv", "xlsx"])
-    
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                df_import = pd.read_csv(uploaded_file)
-            else:
-                df_import = pd.read_excel(uploaded_file)
-                
-            st.write("👀 **File Preview (Pehli 5 lines):**")
-            st.dataframe(df_import.head(), use_container_width=True)
-            
-            # Smart Column Mapping
-            st.markdown("#### 🛠️ Column Mapping (Apni file ke columns select karein)")
-            cols = list(df_import.columns)
-            
-            c_map1, c_map2, c_map3, c_map4 = st.columns(4)
-            col_name = c_map1.selectbox("Medicine Name Column", cols, index=0)
-            col_batch = c_map2.selectbox("Batch No. Column", cols, index=min(2, len(cols)-1))
-            col_exp = c_map3.selectbox("Expiry Column (YYYY-MM)", cols, index=min(3, len(cols)-1))
-            col_mrp = c_map4.selectbox("MRP Column", cols, index=min(4, len(cols)-1))
-            
-            c_map5, c_map6, c_map7 = st.columns(3)
-            col_stock = c_map5.selectbox("Stock Quantity Column", cols, index=min(6, len(cols)-1))
-            col_salt = c_map6.selectbox("Salt / Composition (Optional)", ["None"] + cols)
-            col_gst = c_map7.selectbox("GST % (Optional)", ["Default 12%"] + cols)
-            
-            if st.button("🚀 Start Bulk Import into PharmaAI", type="primary"):
-                imported_count = 0
-                for _, r in df_import.iterrows():
-                    m_name = str(r[col_name])
-                    m_batch = str(r[col_batch])
-                    m_exp = str(r[col_exp])
-                    m_mrp = float(r[col_mrp]) if pd.notnull(r[col_mrp]) else 0.0
-                    m_stock = int(r[col_stock]) if pd.notnull(r[col_stock]) else 0
-                    m_salt = str(r[col_salt]) if col_salt != "None" else "Generic"
-                    m_gst = float(r[col_gst]) if col_gst != "Default 12%" else 12.0
-                    
-                    c.execute("INSERT INTO inventory (name, salt, batch, expiry, mrp, gst, stock) VALUES (?,?,?,?,?,?,?)",
-                              (m_name, m_salt, m_batch, m_exp, m_mrp, m_gst, m_stock))
-                    imported_count += 1
-                    
-                conn.commit()
-                st.success(f"🎉 Zabardast! {imported_count} medicines Marg/Excel file se successfully PharmaAI mein import ho gayi hain!")
-                
-        except Exception as e:
-            st.error(f"File padhne mein error aaya: {e}. Kripya CSV ya Excel (.xlsx) format check karein.")
+    if st.button("➕ Add to Cart"):
+      item_total = qty * selected_med["mrp"]
+      st.session_state.cart.append({
+          "name": selected_med["name"],
+          "batch": selected_med["batch"],
+          "qty": qty,
+          "price": selected_med["mrp"],
+          "total": item_total,
+          "gst": selected_med["gst"],
+      })
+      st.success(f"Added {qty}x {selected_med['name']} to cart!")
+
+  with col2:
+    st.markdown("### 🧾 Current Cart Summary")
+    if len(st.session_state.cart) > 0:
+      cart_df = pd.DataFrame(st.session_state.cart)
+      st.dataframe(cart_df[["name", "qty", "total"]], hide_index=True)
+
+      subtotal = cart_df["total"].sum()
+      discount = st.number_input("Discount (%)", 0.0, 50.0, 0.0)
+      final_amount = subtotal - (subtotal * discount / 100)
+
+      st.markdown(f"### **Grand Total: ₹{final_amount:.2f}**")
+
+      patient_name = st.text_input("Patient Name", "Rahul Sharma")
+      doctor_name = st.text_input("Prescribing Doctor", "Dr. V. K. Verma")
+
+      if st.button("🖨️ Generate Invoice & Complete Sale"):
+        invoice_data = {
+            "invoice_id": f"INV-{int(datetime.now().timestamp())}",
+            "patient": patient_name,
+            "doctor": doctor_name,
+            "total": final_amount,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "items": st.session_state.cart.copy(),
+        }
+        st.session_state.sales_history.append(invoice_data)
+
+        # Deduct Stock
+        for item in st.session_state.cart:
+          st.session_state.inventory.loc[
+              st.session_state.inventory["name"] == item["name"], "stock"
+          ] -= item["qty"]
+
+        st.success(
+            f"✅ Invoice Generated Successfully! ID:"
+            f" {invoice_data['invoice_id']}"
+        )
+        st.session_state.cart = []  # Clear cart
+    else:
+      st.warning("Cart is empty.")
+
+# ----------------- TAB 2: INVENTORY & STOCK -----------------
+with tab2:
+  st.subheader("📦 Live Inventory Database & Stock Management")
+  st.dataframe(st.session_state.inventory, use_container_width=True)
+
+  with st.expander("➕ Add New Medicine to Stock"):
+    with st.form("add_stock_form"):
+      new_name = st.text_input("Medicine Name")
+      new_salt = st.text_input("Salt / Composition")
+      new_batch = st.text_input("Batch Number")
+      new_expiry = st.text_input("Expiry Date (YYYY-MM)", "2027-12")
+      new_stock = st.number_input("Stock Quantity", min_value=1, value=100)
+      new_mrp = st.number_input("MRP (₹)", min_value=1.0, value=50.0)
+      new_gst = st.selectbox("GST %", [0, 5, 12, 18], index=2)
+
+      submitted = st.form_submit_button("Save to Inventory")
+      if submitted:
+        new_row = {
+            "id": len(st.session_state.inventory) + 1,
+            "name": new_name,
+            "salt": new_salt,
+            "batch": new_batch,
+            "expiry": new_expiry,
+            "stock": new_stock,
+            "mrp": new_mrp,
+            "gst": new_gst,
+        }
+        st.session_state.inventory = pd.concat(
+            [st.session_state.inventory, pd.DataFrame([new_row])],
+            ignore_index=True,
+        )
+        st.success(f"Medicine {new_name} added successfully!")
+
+# ----------------- TAB 3: EXPIRY & SCHEDULE H1 -----------------
+with tab3:
+  st.subheader("🚨 Expiry Risk & Schedule H1 Compliance Tracker")
+
+  col1, col2 = st.columns(2)
+  with col1:
+    st.markdown("#### ⚠️ Near Expiry / Expired Stock Alert")
+    # Simple check for demo
+    expired_items = st.session_state.inventory[
+        st.session_state.inventory["expiry"] <= "2026-11"
+    ]
+    if not expired_items.empty:
+      st.error(
+          "Following items require immediate return/disposal due to expiry date"
+          " proximity:"
+      )
+      st.dataframe(expired_items[["name", "batch", "expiry"]], hide_index=True)
+    else:
+      st.success("No critical expiry alerts found for current month.")
+
+  with col2:
+    st.markdown("#### 📑 Schedule H1 Narcotic / Habit-Forming Registry")
+    h1_items = st.session_state.inventory[
+        st.session_state.inventory["salt"].str.contains(
+            "Schedule H1|Alprazolam", case=False, na=False
+        )
+    ]
+    st.dataframe(h1_items[["name", "salt", "stock"]], hide_index=True)
+    st.info(
+        "Note: As per Pharmacy Act, maintaining patient ID & doctor prescription"
+        " records for Schedule H1 drugs is mandatory."
+    )
+
+# ----------------- TAB 4: REPORTS & GST -----------------
+with tab4:
+  st.subheader("📊 Sales Reports & Tax Invoicing")
+  if len(st.session_state.sales_history) > 0:
+    sales_df = pd.DataFrame([
+        {
+            "Invoice ID": s["invoice_id"],
+            "Patient": s["patient"],
+            "Doctor": s["doctor"],
+            "Total Amount (₹)": s["total"],
+            "Date/Time": s["date"],
+        }
+        for s in st.session_state.sales_history
+    ])
+    st.dataframe(sales_df, use_container_width=True)
+
+    # Download button for Excel/CSV format
+    csv = sales_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Download Sales Report (CSV)",
+        data=csv,
+        file_name="pharma_sales_report.csv",
+        mime="text/csv",
+    )
+  else:
+    st.info(
+        "No sales recorded yet. Generate an invoice from the Smart Billing tab"
+        " to view reports."
+    )
